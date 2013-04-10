@@ -945,7 +945,6 @@ void decodeModesMessage(struct modesMessage *mm, unsigned char *msg) {
 
     /* Work on our local copy */
     memcpy(mm->msg,msg,MODES_LONG_MSG_BYTES);
-    mm->signalLevel  = 0xA5;
     msg = mm->msg;
 
     /* Get the message type ASAP as other operations depend on this */
@@ -1137,6 +1136,7 @@ void displayModesMessage(struct modesMessage *mm) {
     /* Show the raw message. */
     printf("*");
     for (j = 0; j < mm->msgbits/8; j++) printf("%02x", mm->msg[j]);
+    printf(" : Timestamp = %08x",mm->timestampMsg);
     printf(";\n");
 
     if (Modes.raw) {
@@ -1296,15 +1296,14 @@ int detectOutOfPhase(uint16_t *pPreamble) {
  * it will be more likely to detect a one because of the transformation.
  * In this way similar levels will be interpreted more likely in the
  * correct way. */
-void applyPhaseCorrection(uint16_t *m) {
+void applyPhaseCorrection(uint16_t *pPayload) {
     int j;
-    for (j = 0; j < MODES_LONG_MSG_SAMPLES; j += 2) {
-        if (m[j] > m[j+1]) {
-            /* One */
-            m[j+2] = (m[j+2] * 5) / 4;
-        } else {
-            /* Zero */
-            m[j+2] = (m[j+2] * 4) / 5;
+
+    for (j = 0; j < MODES_LONG_MSG_SAMPLES; j += 2, pPayload += 2) {
+        if (pPayload[0] > pPayload[1]) { /* One */
+            pPayload[2] = (pPayload[2] * 5) / 4;
+        } else {                           /* Zero */
+            pPayload[2] = (pPayload[2] * 4) / 5;
         }
     }
 }
@@ -1313,8 +1312,7 @@ void applyPhaseCorrection(uint16_t *m) {
  * size 'mlen' bytes. Every detected Mode S message is convert it into a
  * stream of bits and passed to the function to display it. */
 void detectModeS(uint16_t *m, uint32_t mlen) {
-    unsigned char bits[MODES_LONG_MSG_BITS];
-    unsigned char msg[MODES_LONG_MSG_BYTES];
+    unsigned char msg[MODES_LONG_MSG_BYTES], *pMsg;
     uint16_t aux[MODES_LONG_MSG_SAMPLES];
     uint32_t j;
     int use_correction = 0;
@@ -1345,129 +1343,123 @@ void detectModeS(uint16_t *m, uint32_t mlen) {
     for (j = 0; j < mlen; j++) {
         int low, high, delta, i, errors;
         int good_message = 0;
-        uint16_t *pPreamble;
-        int msglen;
+        uint16_t *pPreamble, *pPayload, *pPtr;
+        uint8_t theByte;
+        int msglen, sigStrength;
+
+        if (0x014065e3 == (j + Modes.timestampBlk))
+          {
+          //dumpRawMessage("Debug Trap",msg, m, j);
+          }
 
         pPreamble = &m[j];
-        if (use_correction) goto good_preamble; /* We already checked it. */
+        pPayload  = &m[j+MODES_PREAMBLE_SAMPLES];
 
-        /* First check of relations between the first 10 samples
-         * representing a valid preamble. We don't even investigate further
-         * if this simple test is not passed. */
-        if (!(pPreamble[0] > pPreamble[1] &&
-              pPreamble[1] < pPreamble[2] &&
-              pPreamble[2] > pPreamble[3] &&
-              pPreamble[3] < pPreamble[0] &&
-              pPreamble[4] < pPreamble[0] &&
-              pPreamble[5] < pPreamble[0] &&
-              pPreamble[6] < pPreamble[0] &&
-              pPreamble[7] > pPreamble[8] &&
-              pPreamble[8] < pPreamble[9] &&
-              pPreamble[9] > pPreamble[6]))
-        {
-            if (Modes.debug & MODES_DEBUG_NOPREAMBLE &&
-                *pPreamble  > MODES_DEBUG_NOPREAMBLE_LEVEL)
-                dumpRawMessage("Unexpected ratio among first 10 samples", msg, m, j);
-            continue;
-        }
+        if (!use_correction)  // This is not a re-try with phase correction
+            {                 // so try to find a new preamble
+            /* First check of relations between the first 10 samples
+             * representing a valid preamble. We don't even investigate further
+             * if this simple test is not passed. */
+            if (!(pPreamble[0] > pPreamble[1] &&
+                  pPreamble[1] < pPreamble[2] &&
+                  pPreamble[2] > pPreamble[3] &&
+                  pPreamble[3] < pPreamble[0] &&
+                  pPreamble[4] < pPreamble[0] &&
+                  pPreamble[5] < pPreamble[0] &&
+                  pPreamble[6] < pPreamble[0] &&
+                  pPreamble[7] > pPreamble[8] &&
+                  pPreamble[8] < pPreamble[9] &&
+                  pPreamble[9] > pPreamble[6]))
+            {
+                if (Modes.debug & MODES_DEBUG_NOPREAMBLE &&
+                    *pPreamble  > MODES_DEBUG_NOPREAMBLE_LEVEL)
+                    dumpRawMessage("Unexpected ratio among first 10 samples", msg, m, j);
+                continue;
+            }
 
-        /* The samples between the two spikes must be < than the average
-         * of the high spikes level. We don't test bits too near to
-         * the high levels as signals can be out of phase so part of the
-         * energy can be in the near samples. */
-        high = (pPreamble[0]+pPreamble[2]+pPreamble[7]+pPreamble[9])/6;
-        if (pPreamble[4] >= high ||
-            pPreamble[5] >= high)
-        {
-            if (Modes.debug & MODES_DEBUG_NOPREAMBLE &&
-                *pPreamble  > MODES_DEBUG_NOPREAMBLE_LEVEL)
-                dumpRawMessage("Too high level in samples between 3 and 6", msg, m, j);
-            continue;
-        }
+            /* The samples between the two spikes must be < than the average
+             * of the high spikes level. We don't test bits too near to
+             * the high levels as signals can be out of phase so part of the
+             * energy can be in the near samples. */
+            high = (pPreamble[0]+pPreamble[2]+pPreamble[7]+pPreamble[9])/6;
+            if (pPreamble[4] >= high ||
+                pPreamble[5] >= high)
+            {
+                if (Modes.debug & MODES_DEBUG_NOPREAMBLE &&
+                    *pPreamble  > MODES_DEBUG_NOPREAMBLE_LEVEL)
+                    dumpRawMessage("Too high level in samples between 3 and 6", msg, m, j);
+                continue;
+            }
 
-        /* Similarly samples in the range 11-14 must be low, as it is the
-         * space between the preamble and real data. Again we don't test
-         * bits too near to high levels, see above. */
-        if (pPreamble[11] >= high ||
-            pPreamble[12] >= high ||
-            pPreamble[13] >= high ||
-            pPreamble[14] >= high)
-        {
-            if (Modes.debug & MODES_DEBUG_NOPREAMBLE &&
-                *pPreamble  > MODES_DEBUG_NOPREAMBLE_LEVEL)
-                dumpRawMessage("Too high level in samples between 10 and 15", msg, m, j);
-            continue;
-        }
-        Modes.stat_valid_preamble++;
+            /* Similarly samples in the range 11-14 must be low, as it is the
+             * space between the preamble and real data. Again we don't test
+             * bits too near to high levels, see above. */
+            if (pPreamble[11] >= high ||
+                pPreamble[12] >= high ||
+                pPreamble[13] >= high ||
+                pPreamble[14] >= high)
+            {
+                if (Modes.debug & MODES_DEBUG_NOPREAMBLE &&
+                    *pPreamble  > MODES_DEBUG_NOPREAMBLE_LEVEL)
+                    dumpRawMessage("Too high level in samples between 10 and 15", msg, m, j);
+                continue;
+            }
+            Modes.stat_valid_preamble++;
+        } 
 
-good_preamble:
-        /* If the previous attempt with this message failed, retry using
-         * magnitude correction. */
-        if (use_correction) {
-            memcpy(aux,m+j+MODES_PREAMBLE_SAMPLES,sizeof(aux));
-            applyPhaseCorrection(m+j+MODES_PREAMBLE_SAMPLES);
+        else {
+            // If this is a retry for phase correction
+            // Make a copy of the Payload, and phase correct the copy
+            memcpy(aux, pPayload, sizeof(aux));
+            applyPhaseCorrection(aux);
             Modes.stat_out_of_phase++;
-
-            /* TODO ... apply other kind of corrections. */
-        }
+            pPayload = aux;
+            }
 
         /* Decode all the next 112 bits, regardless of the actual message
-         * size. We'll check the actual message type later. */
-        errors = 0;
-        for (i = 0; i < MODES_LONG_MSG_SAMPLES; i += 2) {
-            low = m[j+i+MODES_PREAMBLE_SAMPLES];
-            high = m[j+i+MODES_PREAMBLE_SAMPLES+1];
+         * size. We'll check the actual message type later. */     
+        pMsg        = &msg[0];
+        pPtr        = pPayload;
+        theByte     = 0;
+        errors      = 0;
+        sigStrength = 0;
+        msglen      = MODES_LONG_MSG_BITS;
+        for (i = 0; i < MODES_LONG_MSG_BITS; i++) {
+            low = *pPtr++;
+            high = *pPtr++;
             delta = low-high;
             if (delta < 0) delta = -delta;
 
             if (i > 0 && delta < 256) {
-                bits[i/2] = bits[i/2-1];
+                if (theByte & 2) 
+                  {theByte |= 1;}
             } else if (low == high) {
                 /* Checking if two adiacent samples have the same magnitude
                  * is an effective way to detect if it's just random noise
                  * that was detected as a valid preamble. */
-                bits[i/2] = 2; /* error */
-                if (i < MODES_SHORT_MSG_SAMPLES) errors++;
+                if (i < MODES_SHORT_MSG_BITS) errors++;
             } else if (low > high) {
-                bits[i/2] = 1;
-            } else {
-                /* (low < high) for exclusion  */
-                bits[i/2] = 0;
+                theByte |= 1;
+            } 
+
+            if (i < msglen) {
+               sigStrength += delta;
             }
+
+            if (i == 4) {
+                msglen = modesMessageLenByType(theByte);
+
+            } else if ((i & 7) == 7) {
+                *pMsg++ = theByte;
+            }
+            theByte = theByte << 1;
         }
-
-        /* Restore the original message if we used magnitude correction. */
-        if (use_correction)
-            memcpy(m+j+MODES_PREAMBLE_SAMPLES,aux,sizeof(aux));
-
-        /* Pack bits into bytes */
-        for (i = 0; i < MODES_LONG_MSG_BITS; i += 8) {
-            msg[i/8] =
-                bits[i]<<7 | 
-                bits[i+1]<<6 | 
-                bits[i+2]<<5 | 
-                bits[i+3]<<4 | 
-                bits[i+4]<<3 | 
-                bits[i+5]<<2 | 
-                bits[i+6]<<1 | 
-                bits[i+7];
-        }
-
-        msglen = modesMessageLenByType(msg[0] >> 3) / 8;
-
-        /* Last check, high and low bits are different enough in magnitude
-         * to mark this as real message and not just noise? */
-        delta = 0;
-        for (i = 0; i < msglen*8*2; i += 2) {
-            delta += abs(m[j+i+MODES_PREAMBLE_SAMPLES]-
-                         m[j+i+MODES_PREAMBLE_SAMPLES+1]);
-        }
-        delta /= msglen*4;
 
         /* Filter for an average delta of three is small enough to let almost
          * every kind of message to pass, but high enough to filter some
          * random noise. */
-        if (delta < 10*255) {
+        sigStrength /= msglen;
+        if (sigStrength < (5*255)) {
             use_correction = 0;
             continue;
         }
@@ -1480,6 +1472,7 @@ good_preamble:
 
             /* Decode the received message and update statistics */
             mm.timestampMsg = Modes.timestampBlk + (j*6);
+            mm.signalLevel  = min(((sigStrength+0x7F) >> 8), 255);
             decodeModesMessage(&mm,msg);
 
             /* Update statistics. */
@@ -1515,7 +1508,7 @@ good_preamble:
 
             /* Skip this message if we are sure it's fine. */
             if (mm.crcok) {
-                j += (MODES_PREAMBLE_US+(msglen*8))*2;
+                j += (MODES_PREAMBLE_US+msglen)*2;
                 good_message = 1;
                 if (use_correction)
                     mm.phase_corrected = 1;
@@ -1816,11 +1809,13 @@ void interactiveShowData(void) {
     char spinner[4] = "|/-\\";
     
     progress = spinner[time(NULL)%4];
-    
+
+#ifndef _WIN32
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
+#endif
     printf(
-"Hex     ModeA  Flight   Alt     Speed   Lat       Lon       Track  Msgs   Seen %c\n"
-"--------------------------------------------------------------------------------\n",
+"Hex     Sqwk   Flight   Alt    Speed   Lat       Lon       Track  Msgs   Seen %c\n"
+"-------------------------------------------------------------------------------\n",
         progress);
 
     while(a && count < Modes.interactive_rows) {
@@ -1852,12 +1847,15 @@ void interactiveShowData(void) {
             spacer = ' ';
         }
 
-        printf("%-6s  %-4s   %-8s %-7d %-7d %-7.03f   %-7.03f   %-3d    %-6d %d%c sec\n",
+        printf("%-6s  %-4s   %-8s %-7d %-6d %-7.03f   %-7.03f   %-3d    %-6d %d%c sec\n",
             a->hexaddr, squawk, a->flight, altitude, speed,
             a->lat, a->lon, a->track, msgs, (int)(now - a->seen), spacer);
         a = a->next;
         count++;
     }
+#ifdef _WIN32
+  printf("\n");
+#endif
 }
 
 /* When in interactive mode If we don't receive new nessages within
@@ -1944,8 +1942,9 @@ void modesInitNet(void) {
         anetNonBlock(Modes.aneterr, s);
         *services[j].socket = s;
     }
-
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif
 }
 
 /* This function gets called from time to time when the decoding thread is
@@ -2172,6 +2171,7 @@ int decodeHexMessage(struct client *c) {
         msg[j/2] = (high<<4) | low;
     }
     mm.timestampMsg = -1;
+    mm.signalLevel  = -1;
     decodeModesMessage(&mm,msg);
     useModesMessage(&mm);
     return 0;
