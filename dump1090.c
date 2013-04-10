@@ -1408,12 +1408,14 @@ void detectModeS(uint16_t *m, uint32_t mlen) {
         } 
 
         else {
-            // If this is a retry for phase correction
+            /* If the previous attempt with this message failed, retry using
+             * magnitude correction. */
             // Make a copy of the Payload, and phase correct the copy
             memcpy(aux, pPayload, sizeof(aux));
             applyPhaseCorrection(aux);
             Modes.stat_out_of_phase++;
             pPayload = aux;
+            /* TODO ... apply other kind of corrections. */
             }
 
         /* Decode all the next 112 bits, regardless of the actual message
@@ -1437,6 +1439,7 @@ void detectModeS(uint16_t *m, uint32_t mlen) {
                 /* Checking if two adiacent samples have the same magnitude
                  * is an effective way to detect if it's just random noise
                  * that was detected as a valid preamble. */
+                theByte |= 2; /* error */
                 if (i < MODES_SHORT_MSG_BITS) errors++;
             } else if (low > high) {
                 theByte |= 1;
@@ -1810,7 +1813,7 @@ void interactiveShowData(void) {
     
     progress = spinner[time(NULL)%4];
 
-#ifndef _WIN32
+#ifndef _WIN32                  // Windows doesn't like clearing the screen unless ansi.sys is loaded
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
 #endif
     printf(
@@ -1853,7 +1856,7 @@ void interactiveShowData(void) {
         a = a->next;
         count++;
     }
-#ifdef _WIN32
+#ifdef _WIN32 // since we're not clearing the screen, add a new line between each iteration
   printf("\n");
 #endif
 }
@@ -1942,9 +1945,8 @@ void modesInitNet(void) {
         anetNonBlock(Modes.aneterr, s);
         *services[j].socket = s;
     }
-#ifndef _WIN32
+
     signal(SIGPIPE, SIG_IGN);
-#endif
 }
 
 /* This function gets called from time to time when the decoding thread is

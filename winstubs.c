@@ -3,7 +3,7 @@
 // used in the dump1090 project. This allows dump1090 to be compiled and debugged 
 // using Microsoft Visual C++ 6.0
 //
-// ote that not all functions actually provide equivalent functionality to their 
+// Note that not all functions actually provide equivalent functionality to their 
 // Linux equivalents. They are simply stubs to allow the project to compile.
 //
 #include "dump1090.h"

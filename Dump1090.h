@@ -3,7 +3,7 @@
 // used in the dump1090 project. This allows dump1090 to be compiled and debugged 
 // using Microsoft Visual C++ 6.0
 //
-// ote that not all functions actually provide equivalent functionality to their 
+// Note that not all functions actually provide equivalent functionality to their 
 // Linux equivalents. They are simply stubs to allow the project to compile.
 //
 #ifndef __DUMP1090_H
@@ -25,6 +25,7 @@ extern "C" {
 #define M_PI         3.14159265358
 #define STDIN_FILENO 0x1
 #define ANET_ERR_LEN 256
+#define SIGPIPE      0x1234
 
 typedef UCHAR   uint8_t;
 typedef USHORT  uint16_t;
