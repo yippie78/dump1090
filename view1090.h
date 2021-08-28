@@ -34,6 +34,9 @@
 
 #include "dump1090.h"
 
+struct stDF tDF;
+struct stModes Modes;
+
 #ifndef _WIN32
     #include <stdio.h>
     #include <string.h>
